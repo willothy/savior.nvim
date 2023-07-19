@@ -402,8 +402,7 @@ function M.enable(init)
 
 	M.send_progress({
 		kind = "end",
-		title = "ready",
-		message = "ready",
+		title = "initialized",
 	})
 
 	local bufnr = vim.api.nvim_get_current_buf()

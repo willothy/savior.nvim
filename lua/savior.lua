@@ -1,48 +1,21 @@
 local M = {}
 
 ---@type uv_timer_t[]
-M.timers = setmetatable({}, {
-	__newindex = function()
-		error("use M.new_timer")
-	end,
-	__metatable = 0,
-})
+M.timers = {}
 
-function M.timer(k)
-	return rawget(M.timers, k)
-end
-
----@return uv_timer_t
-function M.new_timer(k, deferred)
-	if M.timer(k) then
-		return M.timer(k)
-	end
-	local t = deferred or vim.loop.new_timer()
-	rawset(M.timers, k, t)
-	return t
-end
-
----@param fn fun(t: uv_timer_t): any
----@param alt fun(): any
-function M.if_timer(k, fn, alt)
-	local t = M.timer(k)
-	if t then
-		return fn(t)
-	elseif alt then
-		return alt()
-	end
-end
+M.progress = {}
 
 function M.throttle(fn, timeout)
 	-- reuse an old timer if we have one
-	local t = M.if_timer(fn, function(maybe_t)
-		if maybe_t:is_active() then
-			maybe_t:stop()
+	local t
+	if M.timers[fn] ~= nil then
+		t = M.timers[fn]
+		if not t:is_closing() then
+			t:stop()
 		end
-		return maybe_t
-	end, function()
-		return M.new_timer(fn)
-	end)
+	else
+		t = vim.loop.new_timer()
+	end
 	local running = false
 	return vim.schedule_wrap(function(...)
 		if not running then
@@ -50,20 +23,20 @@ function M.throttle(fn, timeout)
 			running = true
 			t:start(timeout, 0, function()
 				running = false
+				t:stop()
 			end)
 		end
 	end)
 end
 
 function M.save(bufnr)
-	M.progress_start("saving")
-	if M.should_save(bufnr) == false then
+	if M.should_save(bufnr) == false or vim.api.nvim_get_mode().mode == "i" then
 		M.cancel(bufnr)
-		M.progress_stop()
 		return
 	end
 
 	M.callback("on_save", bufnr)
+
 	vim.api.nvim_buf_call(bufnr, function()
 		vim.api.nvim_exec2("silent! write", {})
 	end)
@@ -78,17 +51,26 @@ function M.callback(id, bufnr)
 	end
 end
 
-function M.progress_start(title)
+function M.progress_start(title, message)
 	M.send_progress({
 		kind = "begin",
 		title = title,
+		message = message,
 	})
 end
 
-function M.progress_stop(message)
+function M.progress_report(message)
+	M.send_progress({
+		kind = "report",
+		message = message,
+	})
+end
+
+function M.progress_stop(title, message)
 	M.send_progress({
 		kind = "end",
-		title = message,
+		title = title,
+		message = message,
 	})
 end
 
@@ -108,7 +90,6 @@ function M.immediate(bufnr)
 		end
 		M.cancel(bufnr)
 		if M.should_save(bufnr) then
-			M.progress_start("saving")
 			M.callback("on_immediate", bufnr)
 			M.save(bufnr)
 			M.callback("on_immediate_done", bufnr)
@@ -122,30 +103,38 @@ function M.deferred(bufnr)
 	end
 	M.cancel(bufnr)
 	if M.should_save(bufnr) == true then
-		vim.defer_fn(function()
+		if not M.progress[bufnr] then
+			M.progress_start("saving")
+			M.progress[bufnr] = true
+		end
+		M.timers[bufnr] = vim.defer_fn(function()
 			M.save(bufnr)
 			M.callback("on_deferred_done", bufnr)
-		end, M.config.defer_ms or 2000)
+		end, M.config.defer_ms or 1000)
 		M.callback("on_deferred", bufnr)
 	end
 end
 
 function M.cancel(bufnr)
-	vim.schedule(function()
-		if type(bufnr) ~= "number" then
-			if type(bufnr) == "table" then
-				bufnr = bufnr.bufnr or bufnr.buf
-			else
-				bufnr = vim.api.nvim_get_current_buf()
-			end
+	if type(bufnr) ~= "number" then
+		if type(bufnr) == "table" then
+			bufnr = bufnr.bufnr or bufnr.buf
+		else
+			bufnr = vim.api.nvim_get_current_buf()
 		end
-		M.if_timer(bufnr, function(t)
-			t:stop()
+	end
+	if M.timers[bufnr] ~= nil then
+		local t = M.timers[bufnr]
+		if not t:is_closing() then
 			t:close()
-			rawset(M.timers, bufnr, nil)
-			M.callback("on_cancel", bufnr)
-		end)
-	end)
+		end
+		M.timers[bufnr] = nil
+		M.callback("on_cancel", bufnr)
+	end
+	if M.progress[bufnr] then
+		M.progress_stop("cancelled")
+		M.progress[bufnr] = nil
+	end
 end
 
 function M.send_progress(data)
@@ -212,7 +201,11 @@ function M.setup(opts)
 				"InsertLeave",
 				"TextChanged",
 			},
-			cancel = { "InsertEnter", "BufWritePost" },
+			cancel = {
+				"InsertEnter",
+				"BufWritePost",
+				"TextChanged",
+			},
 		},
 		callbacks = {},
 		conditions = {
@@ -377,12 +370,12 @@ function M.enable(init)
 	M.augroup = vim.api.nvim_create_augroup("savior", { clear = true })
 	vim.api.nvim_create_autocmd(M.config.events.immediate, {
 		group = M.augroup,
-		callback = M.throttle(M.immediate, M.config.throttle_ms or 1000),
+		callback = M.throttle(M.immediate, M.config.throttle_ms or 3000),
 	})
 
 	vim.api.nvim_create_autocmd(M.config.events.deferred, {
 		group = M.augroup,
-		callback = M.throttle(M.deferred, M.config.throttle_ms or 1000),
+		callback = M.throttle(M.deferred, M.config.throttle_ms or 3000),
 	})
 
 	vim.api.nvim_create_autocmd(M.config.events.cancel, {
@@ -391,7 +384,14 @@ function M.enable(init)
 	})
 
 	local save_interval = M.config.interval_ms or 30000
-	local t = M.new_timer("interval")
+
+	local t
+	if M.timers["interval"] then
+		t = M.timers["interval"]
+	else
+		t = vim.loop.new_timer()
+		M.timers["interval"] = t
+	end
 	t:start(
 		save_interval,
 		save_interval,
@@ -450,6 +450,11 @@ return setmetatable({
 	shutdown = M.shutdown,
 	utils = {
 		notify = M.notify,
+		progress = {
+			start = M.progress_start,
+			stop = M.progress_stop,
+			report = M.progress_report,
+		},
 		rename = M.rename_client,
 	},
 }, {

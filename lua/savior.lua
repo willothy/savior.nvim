@@ -450,6 +450,11 @@ return setmetatable({
 	shutdown = M.shutdown,
 	utils = {
 		notify = M.notify,
+		progress = {
+			start = M.progress_start,
+			stop = M.progress_stop,
+			report = M.progress_report,
+		},
 		rename = M.rename_client,
 	},
 }, {

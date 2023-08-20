@@ -191,7 +191,6 @@ function M.setup(opts)
 
   opts = vim.tbl_deep_extend("keep", opts, {
     fancy_status = true,
-    disable_format = true,
     events = {
       immediate = {
         "FocusLost",
@@ -237,7 +236,6 @@ function M.setup(opts)
 
   vim.validate({
     ["fancy_status"] = { opts.fancy_status, "boolean", true },
-    ["disable_format"] = { opts.disable_format, "boolean", true },
     ["events.immediate"] = {
       opts.events.immediate,
       { "table", "string" },
@@ -302,28 +300,6 @@ function M.setup(opts)
     title = "initializing",
   })
 
-  if M.config.disable_format then
-    local prev_save
-    if M.config.callbacks.on_save then
-      prev_save = M.config.callbacks.on_save
-    end
-    M.config.callbacks.on_save = function(bufnr)
-      -- require("lsp-format").disable({ args = "" })
-      if prev_save then
-        prev_save(bufnr)
-      end
-    end
-    local prev_save_done
-    if M.on_save_done then
-      prev_save_done = M.config.callbacks.on_save_done
-    end
-    M.config.callbacks.on_save_done = function(bufnr)
-      -- require("lsp-format").enable({ args = "" })
-      if prev_save_done then
-        prev_save_done(bufnr)
-      end
-    end
-  end
   M.enable(true)
 end
 

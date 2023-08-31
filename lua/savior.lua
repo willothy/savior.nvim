@@ -5,6 +5,46 @@ M.timers = {}
 
 M.progress = {}
 
+M.conditions = {}
+
+function M.conditions.is_file_buf(bufnr)
+  return vim.api.nvim_buf_is_valid(bufnr)
+    and vim.bo[bufnr].buftype == ""
+    and vim.bo[bufnr].modifiable == true
+    and vim.bo[bufnr].readonly == false
+end
+
+function M.conditions.is_modified(bufnr)
+  return vim.api.nvim_buf_get_option(bufnr, "modified") == 1
+end
+
+function M.conditions.is_listed(bufnr)
+  return vim.bo[bufnr].buflisted == true
+end
+
+function M.conditions.is_named(bufnr)
+  return vim.api.nvim_buf_get_name(bufnr) ~= ""
+end
+
+function M.conditions.has_no_errors(bufnr)
+  return vim.diagnostic.get(bufnr, { severity = 1 })[1] == nil
+end
+
+function M.conditions.file_exists(bufnr)
+  return vim.uv.fs_stat(vim.api.nvim_buf_get_name(bufnr)) ~= nil
+end
+
+function M.conditions.not_of_filetype(filetypes)
+  if type(filetypes) ~= "table" then
+    filetypes = { filetypes }
+  end
+  vim.tbl_add_reverse_lookup(filetypes)
+  return function(bufnr)
+    local ft = vim.bo[bufnr].filetype
+    return filetypes[ft] == nil
+  end
+end
+
 function M.throttle(fn, timeout)
   -- reuse an old timer if we have one
   local t
@@ -181,9 +221,13 @@ function M.rename_client(name)
 end
 
 ---@class AutoSave.Options
----@field condition (fun(bufnr: buffer, winnr: window): boolean)[]
----@field update { immediate: string[], deferred: string[], cancel: string[] }
+---@field conditions (fun(bufnr: buffer): boolean)[]
+---@field events { immediate: string[], deferred: string[], cancel: string[] }
 ---@field callbacks table<string, fun(bufnr: buffer)>
+---@field fancy_status boolean
+---@field throttle_ms number
+---@field defer_ms number
+---@field interval_ms number
 
 ---@param opts AutoSave.Options
 function M.setup(opts)
@@ -208,29 +252,14 @@ function M.setup(opts)
     },
     callbacks = {},
     conditions = {
-      function(bufnr)
-        return vim.api.nvim_buf_is_valid(bufnr)
-          and vim.bo[bufnr].buftype == ""
-          and vim.bo[bufnr].buflisted == true
-          and vim.bo[bufnr].modifiable == true
-          and vim.bo[bufnr].readonly == false
-      end,
-      function(bufnr)
-        local ft = vim.bo[bufnr].filetype
-        local ignore = {
-          help = true,
-          qf = true,
-          gitcommit = true,
-          gitrebase = true,
-        }
-        return ignore[ft] == nil
-      end,
-      function(bufnr)
-        return vim.api.nvim_buf_get_name(bufnr) ~= ""
-      end,
-      function(bufnr)
-        return vim.diagnostic.get(bufnr, { severity = 1 })[1] == nil
-      end,
+      M.conditions.is_file_buf,
+      M.conditions.not_of_filetype({
+        "gitcommit",
+        "gitrebase",
+      }),
+      M.conditions.is_named,
+      M.conditions.file_exists,
+      M.conditions.has_no_errors,
     },
   })
 
@@ -309,11 +338,22 @@ function M.start_client()
   end
   M.client = vim.lsp.start({
     name = "savior",
-    root_dir = vim.fn.getcwd(),
     cmd = function()
+      local stopped = false
       return {
-        request = function() end,
-        stop = function()
+        request = function(method, params, cb)
+          if method == "initialize" then
+            cb(nil, {
+              capabilities = {},
+            })
+          end
+        end,
+        notify = function() end,
+        is_closing = function()
+          return stopped
+        end,
+        terminate = function()
+          stopped = true
           local f = M.notify("stopping")
           vim.schedule(function()
             f("stopped")
@@ -321,7 +361,6 @@ function M.start_client()
         end,
       }
     end,
-    filetypes = {},
   })
 end
 
@@ -365,14 +404,14 @@ function M.enable(init)
 
   local save_interval = M.config.interval_ms or 30000
 
-  local t
+  local interval
   if M.timers["interval"] then
-    t = M.timers["interval"]
+    interval = M.timers["interval"]
   else
-    t = vim.loop.new_timer()
-    M.timers["interval"] = t
+    interval = vim.loop.new_timer()
+    M.timers["interval"] = interval
   end
-  t:start(
+  interval:start(
     save_interval,
     save_interval,
     vim.schedule_wrap(function()
@@ -404,8 +443,16 @@ function M.disable()
   -- stop any autocmd-related timers
   -- but we don't need to free these, they can be reused
   -- since the same functions are used for the autocmds
-  for _, timer in pairs(M.timers) do
+  for i, timer in pairs(M.timers) do
     timer:stop()
+    timer:close()
+    M.timers[i] = nil
+  end
+
+  if M.timers["interval"] then
+    M.timers["interval"]:stop()
+    M.timers["interval"]:close()
+    M.timers["interval"] = nil
   end
 end
 
@@ -423,11 +470,12 @@ function M.shutdown()
   end
 end
 
-return setmetatable({
+return {
   setup = M.setup,
   disable = M.disable,
   enable = M.enable,
   shutdown = M.shutdown,
+  conditions = M.conditions,
   utils = {
     notify = M.notify,
     progress = {
@@ -437,20 +485,4 @@ return setmetatable({
     },
     rename = M.rename_client,
   },
-}, {
-  -- give read-only access to the internals to those who want it
-  __index = function(_, k)
-    if k == "timers" then
-      return setmetatable({}, { __metatable = M.timers })
-    end
-    if M[k] then
-      return M[k]
-    end
-  end,
-  -- but seal them so they're hidden from `vim.print` and similar
-  __metatable = {},
-  -- don't allow new fields to be added
-  __newindex = function()
-    error("savior: cannot modify module")
-  end,
-})
+}

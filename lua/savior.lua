@@ -15,11 +15,11 @@ function M.conditions.is_file_buf(bufnr)
 end
 
 function M.conditions.is_modified(bufnr)
-  return vim.api.nvim_buf_get_option(bufnr, "modified") == 1
+  return vim.bo[bufnr].modified
 end
 
 function M.conditions.is_listed(bufnr)
-  return vim.bo[bufnr].buflisted == true
+  return vim.bo[bufnr].buflisted
 end
 
 function M.conditions.is_named(bufnr)
@@ -339,10 +339,42 @@ function M.start_client()
   M.client = vim.lsp.start({
     name = "savior",
     root_dir = vim.fn.getcwd(),
-    cmd = function()
+    -- capabilities = vim.lsp.protocol.make_client_capabilities(),
+    settings = {},
+    cmd = function(dispatchers)
+      -- vim.print("dispatchers: ", dispatchers)
+      local stopped = false
       return {
-        request = function() end,
-        stop = function()
+        request = function(m, params, cb)
+          vim.print("request: " .. m)
+          if m == "initialize" then
+            cb(nil, {
+              serverInfo = {
+                name = "savior",
+              },
+              ---@type lsp.ServerCapabilities
+              capabilities = {
+                textDocumentSync = {
+                  openClose = true,
+                  change = 2,
+                },
+              },
+            })
+          end
+        end,
+        notify = function(m, params)
+          vim.print("notify: " .. m)
+          if m == "textDocument/didChange" then
+            M.i = (M.i or 0) + 1
+            vim.print(M.i)
+            -- M.deferred(bufnr)
+          end
+        end,
+        is_closing = function()
+          return stopped
+        end,
+        terminate = function()
+          stopped = true
           local f = M.notify("stopping")
           vim.schedule(function()
             f("stopped")
@@ -351,7 +383,23 @@ function M.start_client()
       }
     end,
     filetypes = {},
+    before_init = function()
+      vim.print("before init")
+    end,
+    on_init = function()
+      vim.print("init")
+    end,
+    on_attach = function(client, bufnr)
+      vim.print("attached: " .. bufnr)
+    end,
+  }, {
+    bufnr = 0,
+    reuse_client = function()
+      return true
+    end,
   })
+
+  vim.lsp.buf_attach_client(0, M.client)
 end
 
 function M.stop_client()
@@ -390,6 +438,18 @@ function M.enable(init)
   vim.api.nvim_create_autocmd(M.config.events.cancel, {
     group = M.augroup,
     callback = M.cancel,
+  })
+
+  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+    group = M.augroup,
+    callback = function(ev)
+      M.cancel(ev.buf)
+      M.progress[ev.buf] = nil
+      if M.timers[ev.buf] then
+        M.timers[ev.buf]:close()
+        M.timers[ev.buf] = nil
+      end
+    end,
   })
 
   local save_interval = M.config.interval_ms or 30000

@@ -416,7 +416,11 @@ function M.enable(init)
     save_interval,
     save_interval,
     vim.schedule_wrap(function()
-      vim.iter(vim.api.nvim_list_bufs()):filter(M.should_save):each(M.deferred)
+      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+        if M.should_save(buf) then
+          M.deferred(buf)
+        end
+      end
     end)
   )
 

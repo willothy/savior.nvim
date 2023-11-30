@@ -31,7 +31,8 @@ function M.conditions.has_no_errors(bufnr)
 end
 
 function M.conditions.file_exists(bufnr)
-  return vim.uv.fs_stat(vim.api.nvim_buf_get_name(bufnr)) ~= nil
+  local uv = vim.uv or vim.loop
+  return uv.fs_stat(vim.api.nvim_buf_get_name(bufnr)) ~= nil
 end
 
 function M.conditions.not_of_filetype(filetypes)

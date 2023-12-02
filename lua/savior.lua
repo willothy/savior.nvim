@@ -1,11 +1,93 @@
 local M = {}
 
----@type uv_timer_t[]
-M.timers = {}
-
-M.progress = {}
+local function get_bufnr(buf)
+  if type(buf) == "table" then
+    buf = buf.bufnr or buf.buf
+  end
+  return buf or vim.api.nvim_get_current_buf()
+end
 
 M.conditions = {}
+
+---@type table<integer, uv_timer_t>
+local timers = {}
+
+---@type table<integer, table>
+local progress = {}
+
+local function progress_start(bufnr)
+  if progress[bufnr] then
+    return
+  end
+  progress[bufnr] = require("fidget").progress.create({
+    message = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t"),
+    title = "saving",
+    lsp_name = "savior",
+    cancellable = true,
+  })
+  vim.api.nvim_buf_attach(bufnr, false, {
+    on_detach = function()
+      if progress[bufnr] then
+        progress[bufnr]:cancel()
+        progress[bufnr] = nil
+      end
+    end,
+    on_reload = function() end,
+  })
+end
+
+local function progress_report(bufnr, opts)
+  if not progress[bufnr] then
+    return
+  end
+  progress[bufnr]:report(opts)
+end
+
+local function progress_finish(bufnr)
+  if not progress[bufnr] then
+    return
+  end
+  progress[bufnr]:finish()
+  progress[bufnr] = nil
+end
+
+local function progress_cancel(bufnr)
+  if not progress[bufnr] then
+    return
+  end
+  progress[bufnr]:cancel()
+  progress[bufnr] = nil
+end
+
+local callbacks = {}
+
+function callbacks.on_save(bufnr)
+  progress_start(bufnr)
+end
+
+function callbacks.on_save_done(bufnr)
+  progress_finish(bufnr)
+end
+
+function callbacks.on_immediate(bufnr)
+  progress_start(bufnr)
+end
+
+function callbacks.on_immediate_done(bufnr)
+  progress_finish(bufnr)
+end
+
+function callbacks.on_deferred(bufnr)
+  progress_start(bufnr)
+end
+
+function callbacks.on_deferred_done(bufnr)
+  progress_finish(bufnr)
+end
+
+function callbacks.on_cancel(bufnr)
+  progress_cancel(bufnr)
+end
 
 function M.conditions.is_file_buf(bufnr)
   return vim.api.nvim_buf_is_valid(bufnr)
@@ -15,11 +97,15 @@ function M.conditions.is_file_buf(bufnr)
 end
 
 function M.conditions.is_modified(bufnr)
-  return vim.api.nvim_buf_get_option(bufnr, "modified") == 1
+  return vim.api.nvim_get_option_value("modified", {
+    buf = bufnr,
+  })
 end
 
 function M.conditions.is_listed(bufnr)
-  return vim.bo[bufnr].buflisted == true
+  return vim.api.nvim_get_option_value("buflisted", {
+    buf = bufnr,
+  })
 end
 
 function M.conditions.is_named(bufnr)
@@ -27,11 +113,14 @@ function M.conditions.is_named(bufnr)
 end
 
 function M.conditions.has_no_errors(bufnr)
-  return vim.diagnostic.get(bufnr, { severity = 1 })[1] == nil
+  return vim.diagnostic.get(
+    bufnr,
+    { severity = vim.diagnostic.severity.ERROR }
+  )[1] == nil
 end
 
 function M.conditions.file_exists(bufnr)
-  local uv = vim.uv or vim.loop
+  local uv = vim.uv or vim.loop -- support older nvim versions
   return uv.fs_stat(vim.api.nvim_buf_get_name(bufnr)) ~= nil
 end
 
@@ -49,8 +138,8 @@ end
 function M.throttle(fn, timeout)
   -- reuse an old timer if we have one
   local t
-  if M.timers[fn] ~= nil then
-    t = M.timers[fn]
+  if timers[fn] ~= nil then
+    t = timers[fn]
     if not t:is_closing() then
       t:stop()
     end
@@ -82,37 +171,16 @@ function M.save(bufnr)
     vim.api.nvim_exec2("silent! noautocmd write!", {})
   end)
   M.callback("on_save_done", bufnr)
-  M.progress_stop("done")
 end
 
 function M.callback(id, bufnr)
-  local f = M.config.callbacks[id]
-  if f then
-    return f(bufnr)
+  local user_cb, cb = M.config.callbacks[id], callbacks[id]
+  if user_cb then
+    user_cb(bufnr)
   end
-end
-
-function M.progress_start(title, message)
-  M.send_progress({
-    kind = "begin",
-    title = title,
-    message = message,
-  })
-end
-
-function M.progress_report(message)
-  M.send_progress({
-    kind = "report",
-    message = message,
-  })
-end
-
-function M.progress_stop(title, message)
-  M.send_progress({
-    kind = "end",
-    title = title,
-    message = message,
-  })
+  if cb then
+    cb(bufnr)
+  end
 end
 
 function M.should_save(bufnr)
@@ -121,14 +189,14 @@ function M.should_save(bufnr)
       return false
     end
   end
-  return vim.api.nvim_buf_get_option(bufnr, "modified") == true
+  return vim.api.nvim_get_option_value("modified", {
+    buf = bufnr,
+  })
 end
 
 function M.immediate(bufnr)
   vim.schedule(function()
-    if type(bufnr) ~= "number" then
-      bufnr = vim.api.nvim_get_current_buf()
-    end
+    bufnr = get_bufnr(bufnr)
     M.cancel(bufnr)
     if M.should_save(bufnr) then
       M.callback("on_immediate", bufnr)
@@ -139,85 +207,27 @@ function M.immediate(bufnr)
 end
 
 function M.deferred(bufnr)
-  if type(bufnr) ~= "number" then
-    bufnr = vim.api.nvim_get_current_buf()
-  end
+  bufnr = get_bufnr(bufnr)
   M.cancel(bufnr)
   if M.should_save(bufnr) == true then
-    if not M.progress[bufnr] then
-      M.progress_start("saving")
-      M.progress[bufnr] = true
-    end
-    M.timers[bufnr] = vim.defer_fn(function()
+    timers[bufnr] = vim.defer_fn(function()
       M.save(bufnr)
       M.callback("on_deferred_done", bufnr)
     end, M.config.defer_ms or 1000)
     M.callback("on_deferred", bufnr)
+    progress_start(bufnr)
   end
 end
 
 function M.cancel(bufnr)
-  if type(bufnr) ~= "number" then
-    if type(bufnr) == "table" then
-      bufnr = bufnr.bufnr or bufnr.buf
-    else
-      bufnr = vim.api.nvim_get_current_buf()
-    end
-  end
-  if M.timers[bufnr] ~= nil then
-    local t = M.timers[bufnr]
+  bufnr = get_bufnr(bufnr)
+  if timers[bufnr] ~= nil then
+    local t = timers[bufnr]
     if not t:is_closing() then
       t:close()
     end
-    M.timers[bufnr] = nil
+    timers[bufnr] = nil
     M.callback("on_cancel", bufnr)
-  end
-  if M.progress[bufnr] then
-    M.progress_stop("cancelled")
-    M.progress[bufnr] = nil
-  end
-end
-
-function M.send_progress(data)
-  if M.config.fancy_status then
-    local handler = vim.lsp.handlers["$/progress"]
-    if handler then
-      handler(nil, {
-        token = M.client,
-        value = data,
-      }, { client_id = M.client })
-    end
-  end
-end
-
-function M.notify(msg)
-  if M.config.fancy_status then
-    local handler = vim.lsp.handlers["$/progress"]
-    if handler then
-      handler(nil, {
-        token = M.client,
-        value = {
-          kind = "message",
-          title = msg,
-        },
-      }, { client_id = M.client })
-    end
-    return function(done_msg)
-      handler(nil, {
-        token = M.client,
-        value = {
-          kind = "end",
-          title = done_msg or msg,
-        },
-      }, { client_id = M.client })
-    end
-  end
-end
-
-function M.rename_client(name)
-  local client = vim.lsp.get_client_by_id(M.client)
-  if client then
-    client.name = name
   end
 end
 
@@ -321,69 +331,10 @@ function M.setup(opts)
 
   M.config = opts
 
-  if M.config.fancy_status then
-    M.start_client()
-  end
-
-  M.send_progress({
-    kind = "begin",
-    title = "initializing",
-  })
-
-  M.enable(true)
+  M.enable()
 end
 
-function M.start_client()
-  if M.client then
-    return
-  end
-  M.client = vim.lsp.start({
-    name = "savior",
-    cmd = function()
-      local stopped = false
-      return {
-        request = function(method, params, cb)
-          if method == "initialize" then
-            cb(nil, {
-              capabilities = {},
-            })
-          end
-        end,
-        notify = function() end,
-        is_closing = function()
-          return stopped
-        end,
-        terminate = function()
-          stopped = true
-          local f = M.notify("stopping")
-          vim.schedule(function()
-            f("stopped")
-          end)
-        end,
-      }
-    end,
-  })
-end
-
-function M.stop_client()
-  if not M.client then
-    return
-  end
-  vim.lsp.stop_client(M.client.id)
-  M.client = nil
-end
-
-function M.enable(init)
-  if not M.client then
-    M.start_client()
-  end
-  if not init then
-    M.send_progress({
-      kind = "begin",
-      title = "setting up",
-    })
-  end
-
+function M.enable()
   if M.augroup then
     vim.api.nvim_del_augroup_by_id(M.augroup)
   end
@@ -406,11 +357,11 @@ function M.enable(init)
   local save_interval = M.config.interval_ms or 30000
 
   local interval
-  if M.timers["interval"] then
-    interval = M.timers["interval"]
+  if timers["interval"] then
+    interval = timers["interval"]
   else
     interval = vim.loop.new_timer()
-    M.timers["interval"] = interval
+    timers["interval"] = interval
   end
   interval:start(
     save_interval,
@@ -423,11 +374,6 @@ function M.enable(init)
       end
     end)
   )
-
-  M.send_progress({
-    kind = "end",
-    title = "initialized",
-  })
 
   local bufnr = vim.api.nvim_get_current_buf()
   if M.should_save(bufnr) then
@@ -448,30 +394,29 @@ function M.disable()
   -- stop any autocmd-related timers
   -- but we don't need to free these, they can be reused
   -- since the same functions are used for the autocmds
-  for i, timer in pairs(M.timers) do
+  for i, timer in pairs(timers) do
     timer:stop()
     timer:close()
-    M.timers[i] = nil
+    timers[i] = nil
   end
 
-  if M.timers["interval"] then
-    M.timers["interval"]:stop()
-    M.timers["interval"]:close()
-    M.timers["interval"] = nil
+  if timers["interval"] then
+    timers["interval"]:stop()
+    timers["interval"]:close()
+    timers["interval"] = nil
   end
 end
 
 function M.shutdown()
   M.disable()
-  M.stop_client()
 
   -- free the timers on shutdown to avoid memory leak
-  for k, timer in pairs(M.timers) do
+  for k, timer in pairs(timers) do
     if timer:is_active() then
       timer:stop()
     end
     timer:close()
-    rawset(M.timers, k, nil)
+    rawset(timers, k, nil)
   end
 end
 
@@ -481,13 +426,4 @@ return {
   enable = M.enable,
   shutdown = M.shutdown,
   conditions = M.conditions,
-  utils = {
-    notify = M.notify,
-    progress = {
-      start = M.progress_start,
-      stop = M.progress_stop,
-      report = M.progress_report,
-    },
-    rename = M.rename_client,
-  },
 }

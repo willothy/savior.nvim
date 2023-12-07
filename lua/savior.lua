@@ -19,10 +19,12 @@ local function progress_start(bufnr)
   if progress[bufnr] then
     return
   end
-  progress[bufnr] = require("fidget").progress.create({
+  progress[bufnr] = require("fidget").progress.handle.create({
     message = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t"),
     title = "saving",
-    lsp_name = "savior",
+    lsp_client = {
+      name = "savior",
+    },
     cancellable = true,
   })
   vim.api.nvim_buf_attach(bufnr, false, {

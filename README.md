@@ -9,7 +9,5 @@ Features:
 - Event-based autosaving, both deferred and immediate
 - Interval-based autosaving
 - Condition stack to determine if it is safe to save
-- Pretty notifications by hooking into Neovim's builtin LSP client
-  - As an added bonus, the `notify` method is exported so you can
-    make your own LSP status notifications
+- Pretty notifications using `fidget.nvim`
 - Written with performance in mind

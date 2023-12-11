@@ -17,6 +17,10 @@ Features:
 
 Requires `fidget.nvim`.
 
+
+https://github.com/willothy/savior.nvim/assets/38540736/9a45ae9e-a038-40a1-83df-6b60dd909cd6
+
+
 ## Installation
 
 with `folke/lazy.nvim`:

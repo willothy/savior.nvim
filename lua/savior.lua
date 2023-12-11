@@ -38,17 +38,13 @@ local function progress_start(bufnr)
   })
 end
 
-local function progress_report(bufnr, opts)
-  if not progress[bufnr] then
-    return
-  end
-  progress[bufnr]:report(opts)
-end
-
 local function progress_finish(bufnr)
   if not progress[bufnr] then
     return
   end
+  progress[bufnr]:report({
+    title = "done",
+  })
   progress[bufnr]:finish()
   progress[bufnr] = nil
 end
@@ -57,6 +53,9 @@ local function progress_cancel(bufnr)
   if not progress[bufnr] then
     return
   end
+  progress[bufnr]:report({
+    title = "cancelled",
+  })
   progress[bufnr]:cancel()
   progress[bufnr] = nil
 end
@@ -215,7 +214,7 @@ function M.deferred(bufnr)
     timers[bufnr] = vim.defer_fn(function()
       M.save(bufnr)
       M.callback("on_deferred_done", bufnr)
-    end, M.config.defer_ms or 1000)
+    end, M.config.defer_ms)
     M.callback("on_deferred", bufnr)
     progress_start(bufnr)
   end
@@ -237,7 +236,6 @@ end
 ---@field conditions (fun(bufnr: buffer): boolean)[]
 ---@field events { immediate: string[], deferred: string[], cancel: string[] }
 ---@field callbacks table<string, fun(bufnr: buffer)>
----@field fancy_status boolean
 ---@field throttle_ms number
 ---@field defer_ms number
 ---@field interval_ms number
@@ -247,7 +245,6 @@ function M.setup(opts)
   opts = opts or {}
 
   opts = vim.tbl_deep_extend("keep", opts, {
-    fancy_status = true,
     events = {
       immediate = {
         "FocusLost",
@@ -274,10 +271,12 @@ function M.setup(opts)
       M.conditions.file_exists,
       M.conditions.has_no_errors,
     },
+    throttle_ms = 3000,
+    interval_ms = 30000,
+    defer_ms = 1000,
   })
 
   vim.validate({
-    ["fancy_status"] = { opts.fancy_status, "boolean", true },
     ["events.immediate"] = {
       opts.events.immediate,
       { "table", "string" },
@@ -343,12 +342,12 @@ function M.enable()
   M.augroup = vim.api.nvim_create_augroup("savior", { clear = true })
   vim.api.nvim_create_autocmd(M.config.events.immediate, {
     group = M.augroup,
-    callback = M.throttle(M.immediate, M.config.throttle_ms or 3000),
+    callback = M.throttle(M.immediate, M.config.throttle_ms),
   })
 
   vim.api.nvim_create_autocmd(M.config.events.deferred, {
     group = M.augroup,
-    callback = M.throttle(M.deferred, M.config.throttle_ms or 3000),
+    callback = M.throttle(M.deferred, M.config.throttle_ms),
   })
 
   vim.api.nvim_create_autocmd(M.config.events.cancel, {
@@ -356,26 +355,28 @@ function M.enable()
     callback = M.cancel,
   })
 
-  local save_interval = M.config.interval_ms or 30000
+  local save_interval = M.config.interval_ms
 
-  local interval
-  if timers["interval"] then
-    interval = timers["interval"]
-  else
-    interval = vim.loop.new_timer()
-    timers["interval"] = interval
-  end
-  interval:start(
-    save_interval,
-    save_interval,
-    vim.schedule_wrap(function()
-      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-        if M.should_save(buf) then
-          M.deferred(buf)
+  if save_interval > 0 then
+    local interval
+    if timers["interval"] then
+      interval = timers["interval"]
+    else
+      interval = vim.loop.new_timer()
+      timers["interval"] = interval
+    end
+    interval:start(
+      save_interval,
+      save_interval,
+      vim.schedule_wrap(function()
+        for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+          if M.should_save(buf) then
+            M.deferred(buf)
+          end
         end
-      end
-    end)
-  )
+      end)
+    )
+  end
 
   local bufnr = vim.api.nvim_get_current_buf()
   if M.should_save(bufnr) then

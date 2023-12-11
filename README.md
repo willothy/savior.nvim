@@ -35,6 +35,10 @@ local spec = {
 savior comes with the following defaults:
 
 ```lua
+-- Note: the default config will be automatically applied,
+-- you do not need to copy-paste this whole configuration.
+-- Only include what you want to change, and the default and custom
+-- tables will be recursively merged.
 local savior = require("savior")
 
 savior.setup({

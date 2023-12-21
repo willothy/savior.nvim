@@ -1,5 +1,6 @@
 local M = {}
 
+---@param buf integer | { bufnr: integer } | { buf: integer } | nil
 local function get_bufnr(buf)
   if type(buf) == "table" then
     buf = buf.bufnr or buf.buf
@@ -7,7 +8,30 @@ local function get_bufnr(buf)
   return buf or vim.api.nvim_get_current_buf()
 end
 
-M.conditions = {}
+---@alias Savior.Condition fun(bufnr: integer): boolean
+---@alias Savior.Callback fun(bufnr: integer)
+
+---@class Savior.Callbacks
+---@field on_save? fun(bufnr: integer)
+---@field on_save_done? fun(bufnr: integer)
+---@field on_immediate? fun(bufnr: integer)
+---@field on_immediate_done? fun(bufnr: integer)
+---@field on_deferred? fun(bufnr: integer)
+---@field on_deferred_done? fun(bufnr: integer)
+---@field on_cancel? fun(bufnr: integer)
+
+---@class Savior.Events
+---@field immediate string[]
+---@field deferred string[]
+---@field cancel string[]
+
+---@class Savior.Options
+---@field events Savior.Events
+---@field conditions Savior.Condition[]
+---@field callbacks Savior.Callbacks
+---@field throttle_ms number
+---@field defer_ms number
+---@field interval_ms number
 
 ---@type table<integer, uv_timer_t>
 local timers = {}
@@ -15,6 +39,7 @@ local timers = {}
 ---@type table<integer, table>
 local progress = {}
 
+---@param bufnr integer
 local function progress_start(bufnr)
   if progress[bufnr] then
     return
@@ -38,6 +63,7 @@ local function progress_start(bufnr)
   })
 end
 
+---@param bufnr integer
 local function progress_finish(bufnr)
   if not progress[bufnr] then
     return
@@ -49,6 +75,7 @@ local function progress_finish(bufnr)
   progress[bufnr] = nil
 end
 
+---@param bufnr integer
 local function progress_cancel(bufnr)
   if not progress[bufnr] then
     return
@@ -60,72 +87,77 @@ local function progress_cancel(bufnr)
   progress[bufnr] = nil
 end
 
-local callbacks = {}
+---@type Savior.Callbacks
+local callbacks = {
+  on_save = function(bufnr)
+    progress_start(bufnr)
+  end,
+  on_save_done = function(bufnr)
+    progress_finish(bufnr)
+  end,
+  on_immediate = function(bufnr)
+    progress_start(bufnr)
+  end,
+  on_immediate_done = function(bufnr)
+    progress_finish(bufnr)
+  end,
+  on_deferred = function(bufnr)
+    progress_start(bufnr)
+  end,
+  on_deferred_done = function(bufnr)
+    progress_finish(bufnr)
+  end,
+  on_cancel = function(bufnr)
+    progress_cancel(bufnr)
+  end,
+}
 
-function callbacks.on_save(bufnr)
-  progress_start(bufnr)
-end
+---@type table<string, Savior.Condition | fun(...:any): Savior.Condition>
+local conditions = {}
 
-function callbacks.on_save_done(bufnr)
-  progress_finish(bufnr)
-end
-
-function callbacks.on_immediate(bufnr)
-  progress_start(bufnr)
-end
-
-function callbacks.on_immediate_done(bufnr)
-  progress_finish(bufnr)
-end
-
-function callbacks.on_deferred(bufnr)
-  progress_start(bufnr)
-end
-
-function callbacks.on_deferred_done(bufnr)
-  progress_finish(bufnr)
-end
-
-function callbacks.on_cancel(bufnr)
-  progress_cancel(bufnr)
-end
-
-function M.conditions.is_file_buf(bufnr)
+---@type Savior.Condition
+function conditions.is_file_buf(bufnr)
   return vim.api.nvim_buf_is_valid(bufnr)
     and vim.bo[bufnr].buftype == ""
     and vim.bo[bufnr].modifiable == true
     and vim.bo[bufnr].readonly == false
 end
 
-function M.conditions.is_modified(bufnr)
+---@type Savior.Condition
+function conditions.is_modified(bufnr)
   return vim.api.nvim_get_option_value("modified", {
     buf = bufnr,
   })
 end
 
-function M.conditions.is_listed(bufnr)
+---@type Savior.Condition
+function conditions.is_listed(bufnr)
   return vim.api.nvim_get_option_value("buflisted", {
     buf = bufnr,
   })
 end
 
-function M.conditions.is_named(bufnr)
+---@type Savior.Condition
+function conditions.is_named(bufnr)
   return vim.api.nvim_buf_get_name(bufnr) ~= ""
 end
 
-function M.conditions.has_no_errors(bufnr)
+---@type Savior.Condition
+function conditions.has_no_errors(bufnr)
   return vim.diagnostic.get(
     bufnr,
     { severity = vim.diagnostic.severity.ERROR }
   )[1] == nil
 end
 
-function M.conditions.file_exists(bufnr)
+---@type Savior.Condition
+function conditions.file_exists(bufnr)
   local uv = vim.uv or vim.loop -- support older nvim versions
   return uv.fs_stat(vim.api.nvim_buf_get_name(bufnr)) ~= nil
 end
 
-function M.conditions.not_of_filetype(filetypes)
+---@type fun(filetypes: string | string[]): Savior.Condition
+function conditions.not_of_filetype(filetypes)
   if type(filetypes) ~= "table" then
     filetypes = { filetypes }
   end
@@ -136,6 +168,8 @@ function M.conditions.not_of_filetype(filetypes)
   end
 end
 
+---@param fn fun(...:any): ...:any
+---@param timeout integer
 function M.throttle(fn, timeout)
   -- reuse an old timer if we have one
   local t
@@ -160,6 +194,7 @@ function M.throttle(fn, timeout)
   end)
 end
 
+---@param bufnr integer
 function M.save(bufnr)
   if M.should_save(bufnr) == false or vim.api.nvim_get_mode().mode == "i" then
     M.cancel(bufnr)
@@ -174,8 +209,10 @@ function M.save(bufnr)
   M.callback("on_save_done", bufnr)
 end
 
-function M.callback(id, bufnr)
-  local user_cb, cb = M.config.callbacks[id], callbacks[id]
+---@param event string
+---@param bufnr integer
+function M.callback(event, bufnr)
+  local user_cb, cb = M.config.callbacks[event], callbacks[event]
   if user_cb then
     user_cb(bufnr)
   end
@@ -184,6 +221,7 @@ function M.callback(id, bufnr)
   end
 end
 
+---@param bufnr integer
 function M.should_save(bufnr)
   for _, cond in ipairs(M.config.conditions) do
     if cond(bufnr) == false then
@@ -195,6 +233,7 @@ function M.should_save(bufnr)
   })
 end
 
+---@param bufnr integer?
 function M.immediate(bufnr)
   vim.schedule(function()
     bufnr = get_bufnr(bufnr)
@@ -207,6 +246,7 @@ function M.immediate(bufnr)
   end)
 end
 
+---@param bufnr integer?
 function M.deferred(bufnr)
   bufnr = get_bufnr(bufnr)
   M.cancel(bufnr)
@@ -220,6 +260,7 @@ function M.deferred(bufnr)
   end
 end
 
+---@param bufnr integer?
 function M.cancel(bufnr)
   bufnr = get_bufnr(bufnr)
   if timers[bufnr] ~= nil then
@@ -232,15 +273,7 @@ function M.cancel(bufnr)
   end
 end
 
----@class AutoSave.Options
----@field conditions (fun(bufnr: buffer): boolean)[]
----@field events { immediate: string[], deferred: string[], cancel: string[] }
----@field callbacks table<string, fun(bufnr: buffer)>
----@field throttle_ms number
----@field defer_ms number
----@field interval_ms number
-
----@param opts AutoSave.Options
+---@param opts Savior.Options
 function M.setup(opts)
   opts = opts or {}
 
@@ -262,14 +295,14 @@ function M.setup(opts)
     },
     callbacks = {},
     conditions = {
-      M.conditions.is_file_buf,
-      M.conditions.not_of_filetype({
+      conditions.is_file_buf,
+      conditions.not_of_filetype({
         "gitcommit",
         "gitrebase",
       }),
-      M.conditions.is_named,
-      M.conditions.file_exists,
-      M.conditions.has_no_errors,
+      conditions.is_named,
+      conditions.file_exists,
+      conditions.has_no_errors,
     },
     throttle_ms = 3000,
     interval_ms = 30000,
@@ -428,5 +461,5 @@ return {
   disable = M.disable,
   enable = M.enable,
   shutdown = M.shutdown,
-  conditions = M.conditions,
+  conditions = conditions,
 }

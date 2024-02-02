@@ -1,4 +1,4 @@
-*savior.txt*            For NVIM >=0.9           Last change: 2023 December 21
+*savior.txt*            For NVIM >=0.9           Last change: 2024 February 02
 
 ==============================================================================
 Table of Contents                                   *savior-table-of-contents*

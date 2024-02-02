@@ -1,13 +1,5 @@
 local M = {}
 
----@param buf integer | { bufnr: integer } | { buf: integer } | nil
-local function get_bufnr(buf)
-  if type(buf) == "table" then
-    buf = buf.bufnr or buf.buf
-  end
-  return buf or vim.api.nvim_get_current_buf()
-end
-
 ---@alias Savior.Condition fun(bufnr: integer): boolean
 ---@alias Savior.Callback fun(bufnr: integer)
 
@@ -236,7 +228,7 @@ end
 ---@param bufnr integer?
 function M.immediate(bufnr)
   vim.schedule(function()
-    bufnr = get_bufnr(bufnr)
+    bufnr = bufnr or vim.api.nvim_get_current_buf()
     M.cancel(bufnr)
     if M.should_save(bufnr) then
       M.callback("on_immediate", bufnr)
@@ -248,7 +240,7 @@ end
 
 ---@param bufnr integer?
 function M.deferred(bufnr)
-  bufnr = get_bufnr(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
   M.cancel(bufnr)
   if M.should_save(bufnr) == true then
     timers[bufnr] = vim.defer_fn(function()
@@ -262,7 +254,7 @@ end
 
 ---@param bufnr integer?
 function M.cancel(bufnr)
-  bufnr = get_bufnr(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
   if timers[bufnr] ~= nil then
     local t = timers[bufnr]
     if not t:is_closing() then
@@ -375,17 +367,23 @@ function M.enable()
   M.augroup = vim.api.nvim_create_augroup("savior", { clear = true })
   vim.api.nvim_create_autocmd(M.config.events.immediate, {
     group = M.augroup,
-    callback = M.throttle(M.immediate, M.config.throttle_ms),
+    callback = M.throttle(function(ev)
+      M.immediate(ev.buf)
+    end, M.config.throttle_ms),
   })
 
   vim.api.nvim_create_autocmd(M.config.events.deferred, {
     group = M.augroup,
-    callback = M.throttle(M.deferred, M.config.throttle_ms),
+    callback = M.throttle(function(ev)
+      M.deferred(ev.buf)
+    end, M.config.throttle_ms),
   })
 
   vim.api.nvim_create_autocmd(M.config.events.cancel, {
     group = M.augroup,
-    callback = M.cancel,
+    callback = function(ev)
+      M.cancel(ev.buf)
+    end,
   })
 
   local save_interval = M.config.interval_ms
@@ -426,17 +424,19 @@ function M.disable()
   end
 
   -- stop any autocmd-related timers
-  -- but we don't need to free these, they can be reused
-  -- since the same functions are used for the autocmds
   for i, timer in pairs(timers) do
-    timer:stop()
-    timer:close()
+    if not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
     timers[i] = nil
   end
 
   if timers["interval"] then
-    timers["interval"]:stop()
-    timers["interval"]:close()
+    if not timers["interval"]:is_closing() then
+      timers["interval"]:stop()
+      timers["interval"]:close()
+    end
     timers["interval"] = nil
   end
 end

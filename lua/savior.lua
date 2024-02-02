@@ -403,9 +403,7 @@ function M.enable()
       save_interval,
       vim.schedule_wrap(function()
         for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-          if M.should_save(buf) then
-            M.deferred(buf)
-          end
+          M.deferred(buf)
         end
       end)
     )

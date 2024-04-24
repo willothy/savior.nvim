@@ -76,7 +76,9 @@ savior.setup({
   },
   throttle_ms = 3000,
   interval_ms = 30000,
-  defer_ms = 1000
+  defer_ms = 1000,
+  -- Set to false to disable fidget.nvim notifications
+  notify = true
 })
 ```
 

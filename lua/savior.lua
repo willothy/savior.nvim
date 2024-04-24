@@ -12,26 +12,44 @@ end
 ---@alias Savior.Callback fun(bufnr: integer)
 
 ---@class Savior.Callbacks
+---Run when a save of any kind is started
 ---@field on_save? fun(bufnr: integer)
+---Run when a save of any kind is completed
 ---@field on_save_done? fun(bufnr: integer)
+---Run when an immediate save is started
 ---@field on_immediate? fun(bufnr: integer)
+---Run when an immediate save is completed
 ---@field on_immediate_done? fun(bufnr: integer)
+---Run when the timeout for a deferred save is started
 ---@field on_deferred? fun(bufnr: integer)
+---Run when a deferred save is completed
 ---@field on_deferred_done? fun(bufnr: integer)
+---Run when a save is cancelled
 ---@field on_cancel? fun(bufnr: integer)
 
 ---@class Savior.Events
+---Events that will trigger an immediate save
 ---@field immediate string[]
+---Events that will schedule a save
 ---@field deferred string[]
+---Events that will cancel a scheduled save
 ---@field cancel string[]
 
 ---@class Savior.Options
----@field events Savior.Events
----@field conditions Savior.Condition[]
----@field callbacks Savior.Callbacks
----@field throttle_ms number
----@field defer_ms number
----@field interval_ms number
+---Events that trigger saving
+---@field events? Savior.Events
+---Condition stack determining when it's safe to save
+---@field conditions? Savior.Condition[]
+---Callback to execute for specific events
+---@field callbacks? Savior.Callbacks
+---Throttle time for all save types
+---@field throttle_ms? number
+---Wait time for deferred saving
+---@field defer_ms? number
+---Auto-save interval
+---@field interval_ms? number
+---Whether to use fidget.nvim to provide notifications.
+---@field notify? boolean
 
 ---@type table<integer, uv_timer_t>
 local timers = {}
@@ -41,7 +59,7 @@ local progress = {}
 
 ---@param bufnr integer
 local function progress_start(bufnr)
-  if progress[bufnr] then
+  if progress[bufnr] or not M.config.notify then
     return
   end
   progress[bufnr] = require("fidget").progress.handle.create({
@@ -65,7 +83,7 @@ end
 
 ---@param bufnr integer
 local function progress_finish(bufnr)
-  if not progress[bufnr] then
+  if progress[bufnr] == nil or not M.config.notify then
     return
   end
   progress[bufnr]:report({
@@ -77,7 +95,7 @@ end
 
 ---@param bufnr integer
 local function progress_cancel(bufnr)
-  if not progress[bufnr] then
+  if progress[bufnr] == nil or not M.config.notify then
     return
   end
   progress[bufnr]:report({
@@ -156,15 +174,18 @@ function conditions.file_exists(bufnr)
   return uv.fs_stat(vim.api.nvim_buf_get_name(bufnr)) ~= nil
 end
 
----@type fun(filetypes: string | string[]): Savior.Condition
+---@param filetypes string | string[]
+---@return Savior.Condition
 function conditions.not_of_filetype(filetypes)
   if type(filetypes) ~= "table" then
     filetypes = { filetypes }
   end
-  vim.tbl_add_reverse_lookup(filetypes)
+  filetypes = vim.iter(filetypes):fold({}, function(acc, ft)
+    acc[ft] = true
+    return acc
+  end)
   return function(bufnr)
-    local ft = vim.bo[bufnr].filetype
-    return filetypes[ft] == nil
+    return not filetypes[vim.bo[bufnr].filetype]
   end
 end
 
@@ -179,7 +200,7 @@ function M.throttle(fn, timeout)
       t:stop()
     end
   else
-    t = vim.loop.new_timer()
+    t = vim.loop.new_timer() --[[@as uv_timer_t]]
   end
   local running = false
   return vim.schedule_wrap(function(...)
@@ -307,14 +328,15 @@ function M.setup(opts)
     throttle_ms = 3000,
     interval_ms = 30000,
     defer_ms = 1000,
+    notify = true,
   })
 
   vim.validate({
-    ["events.immediate"] = {
-      opts.events.immediate,
-      { "table", "string" },
-      true,
-    },
+    ["notify"] = { opts.notify, "boolean", true },
+    ["throttle_ms"] = { opts.throttle_ms, "integer", true },
+    ["interval_ms"] = { opts.interval_ms, "integer", true },
+    ["defer_ms"] = { opts.defer_ms, "boolean", true },
+    ["events.immediate"] = { opts.events.immediate, { "table", "string" } },
     ["events.deferred"] = { opts.events.deferred, { "table", "string" } },
     ["events.cancel"] = { opts.events.cancel, { "table", "string" } },
     ["callbacks"] = { opts.callbacks, "table" },
@@ -388,7 +410,7 @@ function M.enable()
     callback = M.cancel,
   })
 
-  local save_interval = M.config.interval_ms
+  local save_interval = M.config.interval_ms --[[@as number]]
 
   if save_interval > 0 then
     local interval
@@ -398,15 +420,25 @@ function M.enable()
       interval = vim.loop.new_timer()
       timers["interval"] = interval
     end
-    interval:start(
-      save_interval,
-      save_interval,
-      vim.schedule_wrap(function()
-        for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-          M.deferred(buf)
-        end
-      end)
-    )
+    if interval then
+      interval:start(
+        save_interval,
+        save_interval,
+        vim.schedule_wrap(function()
+          for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+            M.deferred(buf)
+          end
+        end)
+      )
+    else
+      vim.notify(
+        "Failed to start auto-save interval timer",
+        vim.log.levels.WARN,
+        {
+          title = "savior",
+        }
+      )
+    end
   end
 
   local bufnr = vim.api.nvim_get_current_buf()

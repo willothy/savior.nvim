@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/willothy/savior.nvim/compare/v1.1.0...v1.1.1) (2024-04-24)
+
+
+### Bug Fixes
+
+* **compat:** remove usage of `vim.iter` ([660d3b4](https://github.com/willothy/savior.nvim/commit/660d3b425108369fb17ad5674e1106e212da0157))
+
 ## [1.1.0](https://github.com/willothy/savior.nvim/compare/v1.0.0...v1.1.0) (2024-04-24)
 
 

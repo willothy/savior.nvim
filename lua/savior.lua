@@ -325,9 +325,9 @@ function M.setup(opts)
 
   vim.validate({
     ["notify"] = { opts.notify, "boolean", true },
-    ["throttle_ms"] = { opts.throttle_ms, "integer", true },
-    ["interval_ms"] = { opts.interval_ms, "integer", true },
-    ["defer_ms"] = { opts.defer_ms, "boolean", true },
+    ["throttle_ms"] = { opts.throttle_ms, "number", true },
+    ["interval_ms"] = { opts.interval_ms, "number", true },
+    ["defer_ms"] = { opts.defer_ms, "number", true },
     ["events.immediate"] = { opts.events.immediate, { "table", "string" } },
     ["events.deferred"] = { opts.events.deferred, { "table", "string" } },
     ["events.cancel"] = { opts.events.cancel, { "table", "string" } },

@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/willothy/savior.nvim/compare/v1.0.0...v1.1.0) (2024-04-24)
+
+
+### Features
+
+* allow opt-out of `fidget.nvim` notifications ([4ecbdbb](https://github.com/willothy/savior.nvim/commit/4ecbdbb28f3c74a5fd16a7a21c7393d6c544002c))
+
+
+### Bug Fixes
+
+* type names in `vim.validate` ([58eb0d1](https://github.com/willothy/savior.nvim/commit/58eb0d172ae397050dafc984d6454838e6ef4f19))
+
 ## 1.0.0 (2023-12-11)
 
 

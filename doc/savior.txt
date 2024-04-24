@@ -1,4 +1,4 @@
-*savior.txt*            For NVIM >=0.9           Last change: 2024 February 02
+*savior.txt*             For NVIM >=0.9             Last change: 2024 April 24
 
 ==============================================================================
 Table of Contents                                   *savior-table-of-contents*
@@ -86,7 +86,9 @@ saviorcomes with the following defaults:
       },
       throttle_ms = 3000,
       interval_ms = 30000,
-      defer_ms = 1000
+      defer_ms = 1000,
+      -- Set to false to disable fidget.nvim notifications
+      notify = true
     })
 <
 

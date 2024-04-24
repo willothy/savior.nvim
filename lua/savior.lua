@@ -172,12 +172,12 @@ function conditions.not_of_filetype(filetypes)
   if type(filetypes) ~= "table" then
     filetypes = { filetypes }
   end
-  filetypes = vim.iter(filetypes):fold({}, function(acc, ft)
-    acc[ft] = true
-    return acc
-  end)
+  local ft_set = {}
+  for _, ft in ipairs(filetypes) do
+    ft_set[ft] = true
+  end
   return function(bufnr)
-    return not filetypes[vim.bo[bufnr].filetype]
+    return not ft_set[vim.bo[bufnr].filetype]
   end
 end
 

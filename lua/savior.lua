@@ -323,8 +323,8 @@ function M.setup(opts)
     notify = true,
   })
 
-  vim.validate({
-    ["notify"] = { opts.notify, "boolean", true },
+  local spec = {
+    ["notify"] = { opts.notify, "boolean", true, "notify should be a boolean" },
     ["throttle_ms"] = { opts.throttle_ms, "number", true },
     ["interval_ms"] = { opts.interval_ms, "number", true },
     ["defer_ms"] = { opts.defer_ms, "number", true },
@@ -375,7 +375,11 @@ function M.setup(opts)
       end,
       "table",
     },
-  })
+  }
+
+  for k, v in pairs(spec) do
+    vim.validate(k, unpack(v))
+  end
 
   M.config = opts
 
